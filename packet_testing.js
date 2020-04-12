@@ -3,11 +3,44 @@ var fs = require('fs');
 // creates the server
 var server = net.createServer();
 
+//add these together eventually for packet data?
+let u8Buffer = new ArrayBuffer(8);
+let u16Buffer = new ArrayBuffer(16);
+let u32Buffer = new ArrayBuffer(32);
+let bigOlBufferBoi = new ArrayBuffer(32);
+
+//accumulator
+let p = new Uint32Array(bigOlBufferBoi);
+
+var dst,par,val = new Uint8Array(1);
+const BUFFSZ = 32768;
+
 //emitted when server closes ...not emitted until all connections closes.
 server.on('close',function(){
   console.log('Server closed !');
 });
 
+function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return Array.prototype.map.call(new Uint8Array(buffer), x => ('00' + x.toString(16)).slice(-2)).join('');
+}
+
+function putcc(){
+}
+
+//for string messages?
+function putss(dst,par,val){
+	var plen = 0;
+	var vlen = 0;
+	plen = par.length + 1;
+	if(val){
+		vlen = val.length + 1;
+	}
+	return(plen + vlen);
+}
+
+function putxx(){
+	var i, bytes;
+}
 // emitted when new client connects
 server.on('connection',function(socket){
 
@@ -63,25 +96,45 @@ socket.on('data',function(data){
   var bwrite = socket.bytesWritten;
   console.log('Bytes read : ' + bread);
   console.log('Bytes written : ' + bwrite);
-  console.log('Data sent to server : ' + data);
+  //console.log('Data sent to server : ' + data);
 
-  fs.appendFile('etqw-msr-log.txt', Date.now() + "\n", function (err) {
-    if (err) throw err;
-    console.log('Time Saved!');
-  });
+  const incomingBuffer = Buffer.from(data);
+  var incomingData = new Uint8Array(incomingBuffer,0,bread);
+  var iDH = buf2hex(incomingBuffer);
 
-  fs.appendFile('etqw-msr-log.txt', data + "\n", function (err) {
-    if (err) throw err;
-    console.log('Log Saved!');
-  });
+  console.log(buf2hex(iDH));
+
+  //if(incomingData[0,1] == )
+
+  if(iDH != "00000000"){
+    fs.appendFile('etqw-msr-log.txt', Date.now() + "\n", function (err) {
+      if (err) throw err;
+      console.log('Time Saved!');
+    });
+
+    fs.appendFile('etqw-msr-log.txt', data + "\n", function (err) {
+      if (err) throw err;
+      console.log('Raw Data Saved!');
+    });
+
+    fs.appendFile('etqw-msr-log.txt', buf2hex(incomingBuffer) + "\n", function (err) {
+      if (err) throw err;
+      console.log('Buffer Saved!');
+    });
+  } else {
+    console.log("Zero data in sent packet");
+  }
+
+  //need to construct the packet data in a string? dunno
+  //socket.write(incomingData);
 
   //echo data
-  var is_kernel_buffer_full = socket.write('Data ::' + data);
-  if(is_kernel_buffer_full){
-    console.log('Data was flushed successfully from kernel buffer i.e written successfully!');
-  }else{
-    socket.pause();
-  }
+  // var is_kernel_buffer_full = socket.write('Data ::' + data);
+  // if(is_kernel_buffer_full){
+  //   console.log('Data was flushed successfully from kernel buffer i.e written successfully!');
+  // }else{
+  //   socket.pause();
+  // }
 
 });
 
