@@ -303,6 +303,8 @@ wchar_t *va( const wchar_t *fmt, ... ) {
 	return buf;
 }
 
+static int			vsnPrintf( char *dest, int size, const char *fmt, va_list argptr );
+
 /*
 ============
 va
@@ -335,6 +337,80 @@ char *vva( char *buf, const char *fmt, ... ) {
 	va_end( argptr );
 
 	return buf;
+}
+
+/*
+============
+idStr::vsnPrintf
+
+vsnprintf portability:
+
+C99 standard: vsnprintf returns the number of characters (excluding the trailing
+'\0') which would have been written to the final string if enough space had been available
+snprintf and vsnprintf do not write more than size bytes (including the trailing '\0')
+
+win32: _vsnprintf returns the number of characters written, not including the terminating null character,
+or a negative value if an output error occurs. If the number of characters to write exceeds count, then count
+characters are written and -1 is returned and no trailing '\0' is added.
+
+idStr::vsnPrintf: always appends a trailing '\0', returns number of characters written (not including terminal \0)
+or returns -1 on failure or if the buffer would be overflowed.
+============
+*/
+int idStr::vsnPrintf( char *dest, int size, const char *fmt, va_list argptr ) {
+	int ret;
+
+#ifdef _WIN32
+#undef _vsnprintf
+	ret = _vsnprintf( dest, size-1, fmt, argptr );
+#define _vsnprintf	use_idStr_vsnPrintf
+#else
+#undef vsnprintf
+	ret = vsnprintf( dest, size, fmt, argptr );
+#define vsnprintf	use_idStr_vsnPrintf
+#endif
+	dest[size-1] = '\0';
+	if ( ret < 0 || ret >= size ) {
+		return -1;
+	}
+	return ret;
+}
+
+/*
+============
+idWStr::vsnPrintf
+
+see idStr::vsnPrintf
+same _WIN32 vs rest of the world for _vsnwprintf/vswprintf
+
+you can call vsnPrintf( buffer, size ) with wchar_t buffer[size]
+always has a terminating null character after call
+will return -1 on error or overflow
+============
+*/
+int idWStr::vsnPrintf( wchar_t *dest, int size, const wchar_t *fmt, va_list argptr ) {
+	int ret;
+
+#ifdef _WIN32
+#undef _vsnwprintf
+	ret = _vsnwprintf( dest, size-1, fmt, argptr );
+#define _vsnwprintf	use_idWStr_vsnPrintf
+#else
+	// there is a vswprintf( idWStr ), so no #undef
+	ret = vswprintf( dest, size, fmt, argptr );
+#endif
+	dest[size-1] = L'\0';
+
+#ifdef _DEBUG
+	// never pass a %s formatting, always use %hs or %ls (%s works only on windows)
+	if ( FindText( fmt, L"%s" ) != INVALID_POSITION ) {
+		common->Error( "idWStr::vsnPrintf: attempted to pass a non-portable format string" );
+	}
+#endif
+	if ( ret < 0 || ret >= size ) {
+		return -1;
+	}
+	return ret;
 }
 
 /*
