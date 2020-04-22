@@ -1,8 +1,9 @@
+/*
 Demonware master server variables seem to be in CAPITAL LETTERS eg; MAX_HOT_SERVERS
-a class sdNetManager seems to handle any incoming demonware messages 
+a class sdNetManager seems to handle any incoming demonware messages
 sd stands for serviceDemonware???
 SS stands for Service State
-
+/*
 ================
 sdHotServerList::IsServerValid
 ================
@@ -33,6 +34,53 @@ bool sdHotServerList::IsServerValid( const sdNetSession& session, sdNetManager& 
 	return true;
 }
 
+/*
+================
+sdNetManager::sdNetManager
+================
+*/
+sdNetManager::sdNetManager() :
+	activeMessage( NULL ),
+	refreshServerTask( NULL ),
+	findServersTask( NULL ),
+	findRepeatersTask( NULL ),
+	findLANRepeatersTask( NULL ),
+	findHistoryServersTask( NULL ),
+	findFavoriteServersTask( NULL ),
+	findLANServersTask( NULL ),
+	refreshHotServerTask( NULL ),
+	gameSession( NULL ),
+	lastSessionUpdateTime( -1 ),
+	gameTypeNames( NULL ),
+	serverRefreshSession( NULL ),
+	initFriendsTask( NULL ),
+	initTeamsTask( NULL ),
+	hotServers( sessions ),
+	hotServersLAN( sessionsLAN ),
+	hotServersHistory( sessionsHistory ),
+	hotServersFavorites( sessionsFavorites ) {
+}
+
+/*
+================
+sdNetManager::Init
+================
+*/
+void sdNetManager::Init() {
+	properties.Init();
+
+	gameTypeNames = gameLocal.declStringMapType.LocalFind( "game/rules/names" );
+	offlineString = declHolder.declLocStrType.LocalFind( "guis/mainmenu/offline" );
+	infinityString = declHolder.declLocStrType.LocalFind( "guis/mainmenu/infinity" );
+
+	// Initialize functions
+	InitFunctions();
+
+	// Connect to the master
+	Connect();
+}
+
+/*
 ================
 sdNetManager::Connect
 ================
@@ -59,6 +107,128 @@ void sdNetManager::OnConnect( sdNetTask* task, void* parm ) {
 		properties.ConnectFailed();
 	}
 }
+
+class sdNetService {
+public:
+	enum serviceState_e {
+		SS_DISABLED,
+		SS_INITIALIZED,
+		SS_CONNECTING,
+		SS_ONLINE
+	};
+
+	enum disconnectReason_e {
+		DR_NONE,
+		DR_GRACEFUL,
+		DR_CONNECTION_RESET,
+		DR_DUPLICATE_AUTH,
+		DR_ACCOUNT_DELETION,
+	};
+
+	enum dedicatedState_e {
+		DS_OFFLINE,
+		DS_CONNECTING,
+		DS_ONLINE,
+	};
+
+	struct motdEntry_t {
+		sysTime_t	timestamp;
+		idStr		url;
+		idWStr		text;
+	};
+
+	typedef idList< motdEntry_t > motdList_t;
+
+	virtual							~sdNetService() {}
+
+	virtual bool					Init() = 0;
+	virtual void					Shutdown() = 0;
+
+	virtual void					RunFrame() = 0;
+
+	virtual serviceState_e			GetState() const = 0;
+
+	virtual disconnectReason_e		GetDisconnectReason() const = 0;
+
+	virtual dedicatedState_e		GetDedicatedServerState() const = 0;
+
+	virtual const motdList_t&		GetMotD() const = 0;
+
+	//
+	// Key Code
+	//
+	virtual bool					CheckKey( const char* key, bool noChecksum = false ) const = 0;
+
+	virtual const char*				GetStoredLicenseCode() const = 0;
+
+	virtual bool					IsSteamActive() const = 0;
+
+	//
+	// User management
+	//
+	virtual sdNetErrorCode_e		CreateUser( sdNetUser** user, const char* username ) = 0;
+	virtual void					DeleteUser( sdNetUser* user ) = 0;
+
+	virtual int						NumUsers() const = 0;
+	virtual sdNetUser*				GetUser( const int index ) = 0;
+
+	virtual sdNetUser*				GetActiveUser() = 0;
+
+	//
+	// Session management - deferred to Session Manager
+	//
+	virtual sdNetSessionManager&	GetSessionManager() = 0;
+
+#if !defined( SD_DEMO_BUILD )
+	//
+	// Stats management - deferred to Stats Manager
+	//
+	virtual sdNetStatsManager&		GetStatsManager() = 0;
+
+	//
+	// Friends management - deferred to Friends Manager
+	//
+	virtual sdNetFriendsManager&	GetFriendsManager() = 0;
+
+	//
+	// Friends management - deferred to Team Manager
+	//
+	virtual sdNetTeamManager&		GetTeamManager() = 0;
+#endif /* !SD_DEMO_BUILD */
+
+	//
+	// Task management
+	//
+	virtual void					FreeTask( sdNetTask* task ) = 0;
+
+	//
+	// Online Services
+	//
+
+	virtual sdNetErrorCode_e		GetLastError() const = 0;
+
+	// Start online service and connect to auth system
+	virtual sdNetTask*				Connect() = 0;
+
+	// Authorize a dedicated server
+	virtual sdNetTask*				SignInDedicated() = 0;
+
+	// De-authorize a dedicated server
+	virtual sdNetTask*				SignOutDedicated() = 0;
+
+#if !defined( SD_DEMO_BUILD )
+	// Get a list of account names for a license code
+	virtual sdNetTask*				GetAccountsForLicense( idStrList& accountNames, const char* licenseCode ) = 0;
+
+	// Get a user's profile
+	virtual const idDict*			GetProfileProperties( sdNetClientId userID ) const = 0;
+#endif /* !SD_DEMO_BUILD */
+};
+
+extern sdNetService* networkService;
+
+#endif /* !__SDNET_H__ */
+
 
 //looks like this contructs a network packet
 /*
@@ -245,7 +415,11 @@ char* va_floatstring( const char *fmt, ... ) {
 //possibly sets up client-side packet responses
 //ALLOC_FUNC format (for packet construction?)
 // name - internal name for demonware message
-// returntype - ?
+// returntype:
+// -- f = float
+// -- s = string
+// -- v = variable?
+// -- ss = 2 seperate strings
 // params - ?
 // function - runs internal function for corresponding demonware message
 /*
@@ -264,11 +438,59 @@ void sdNetManager::InitFunctions() {
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "connect",					'f', "",		&sdNetManager::Script_Connect );
 
+	/*
+================
+sdNetManager::Script_Connect
+================
+*/
+void sdNetManager::Script_Connect( sdUIFunctionStack& stack ) {
+	stack.Push( Connect() ? 1.0f : 0.0f );
+}
+
 	SD_UI_FUNC_TAG( validateUsername, "Validate the user name before creating an account." )
 		SD_UI_FUNC_PARM( string, "username", "Username to be validated." )
 		SD_UI_FUNC_RETURN_PARM( float, "Returns valid/empty name/duplicate name/invalid name. See Username Validation defines." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "validateUsername",			'f', "s",		&sdNetManager::Script_ValidateUsername );
+
+	/*
+================
+sdNetManager::Script_ValidateUsername
+================
+*/
+void sdNetManager::Script_ValidateUsername( sdUIFunctionStack& stack ) {
+	idStr username;
+	stack.Pop( username );
+
+	if ( username.IsEmpty() ) {
+		stack.Push( sdNetProperties::UV_EMPTY_NAME );
+		return;
+	}
+
+	if ( FindUser( username.c_str() ) != NULL ) {
+		stack.Push( sdNetProperties::UV_DUPLICATE_NAME );
+		return;
+	}
+
+	for( int i = 0; i < username.Length(); i++ ) {
+		if( username[ i ] == '.' || username[ i ] == '_' || username[ i ] == '-' ) {
+			continue;
+		}
+		if( username[ i ] >= 'a' && username[ i ] <= 'z' ) {
+			continue;
+		}
+		if( username[ i ] >= 'A' && username[ i ] <= 'Z' ) {
+			continue;
+		}
+		if( username[ i ] >= '0' && username[ i ] <= '9' ) {
+			continue;
+		}
+		stack.Push( sdNetProperties::UV_INVALID_NAME );
+		return;
+	}
+
+	stack.Push( sdNetProperties::UV_VALID );
+}
 
 	SD_UI_FUNC_TAG( makeRawUsername, "Makes a raw username from the given username." )
 		SD_UI_FUNC_PARM( string, "username", "Username to convert." )
@@ -371,9 +593,64 @@ void sdNetManager::InitFunctions() {
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "signIn",					'v', "",		&sdNetManager::Script_SignIn );
 
+	/*
+================
+sdNetManager::Script_SignIn
+================
+*/
+void sdNetManager::Script_SignIn( sdUIFunctionStack& stack ) {
+	assert( networkService->GetActiveUser() != NULL );
+	assert( networkService->GetActiveUser()->GetState() == sdNetUser::US_ACTIVE );
+
+	if ( activeTask.task != NULL ) {
+		gameLocal.Printf( "SDNet::SignIn : task pending\n" );
+		return;
+	}
+
+	sdNetUser* activeUser = networkService->GetActiveUser();
+
+	if ( !activeTask.Set( activeUser->GetAccount().SignIn() ) ) {
+		gameLocal.Printf( "SDNet::SignIn : failed (%d)\n", networkService->GetLastError() );
+		properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+
+		return;
+	}
+
+	properties.SetTaskActive( true );
+}
+
 	SD_UI_FUNC_TAG( signOut, "Sign out of demonware." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "signOut",					'v', "",		&sdNetManager::Script_SignOut );
+
+	/*
+================
+sdNetManager::Script_SignOut
+================
+*/
+void sdNetManager::Script_SignOut( sdUIFunctionStack& stack ) {
+	assert( networkService->GetActiveUser() != NULL );
+	assert( networkService->GetActiveUser()->GetState() == sdNetUser::US_ONLINE );
+
+	if ( activeTask.task != NULL ) {
+		gameLocal.Printf( "SDNet::SignOut : task pending\n" );
+		return;
+	}
+
+	sdNetUser* activeUser = networkService->GetActiveUser();
+
+	CancelUserTasks();
+
+	if ( !activeTask.Set( activeUser->GetAccount().SignOut() ) ) {
+		gameLocal.Printf( "SDNet::SignOut : failed (%d)\n", networkService->GetLastError() );
+		properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+
+		return;
+	}
+
+	properties.SetTaskActive( true );
+}
+
 
 	SD_UI_FUNC_TAG( getProfileString, "Get a key/val." )
 		SD_UI_FUNC_PARM( string, "key", "Key." )
@@ -392,6 +669,32 @@ void sdNetManager::InitFunctions() {
 	SD_UI_FUNC_TAG( assureProfileExists, "Make sure profile exists at demonware." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "assureProfileExists",		'v', "",		&sdNetManager::Script_AssureProfileExists );
+
+	/*
+================
+sdNetManager::Script_AssureProfileExists
+================
+*/
+void sdNetManager::Script_AssureProfileExists( sdUIFunctionStack& stack ) {
+	assert( networkService->GetActiveUser() != NULL );
+	assert( networkService->GetActiveUser()->GetState() == sdNetUser::US_ONLINE );
+
+	if ( activeTask.task != NULL ) {
+		gameLocal.Printf( "SDNet::AssureProfileExists : task pending\n" );
+		return;
+	}
+
+	sdNetUser* activeUser = networkService->GetActiveUser();
+
+	if ( !activeTask.Set( activeUser->GetProfile().AssureExists() ) ) {
+		gameLocal.Printf( "SDNet::AssureProfileExists : failed (%d)\n", networkService->GetLastError() );
+		properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+
+		return;
+	}
+
+	properties.SetTaskActive( true );
+}
 
 	SD_UI_FUNC_TAG( storeProfile, "Store demonware profile." )
 	SD_UI_END_FUNC_TAG
@@ -412,6 +715,169 @@ void sdNetManager::InitFunctions() {
 		SD_UI_FUNC_RETURN_PARM( float, "True if task created." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "findServers",				'f', "f",		&sdNetManager::Script_FindServers );
+
+	/*
+================
+sdNetManager::Script_FindServers
+================
+*/
+void sdNetManager::Script_FindServers( sdUIFunctionStack& stack ) {
+	int iSource;
+	stack.Pop( iSource );
+
+	findServerSource_e source;
+	if( !sdIntToContinuousEnum< findServerSource_e >( iSource, FS_MIN, FS_MAX, source ) ) {
+		gameLocal.Error( "FindServers: source '%i' out of range", iSource );
+		stack.Push( false );
+		return;
+	}
+
+	if( source == FS_INTERNET && networkService->GetState() != sdNetService::SS_ONLINE ) {
+		gameLocal.Warning( "FindServers: cannot search for internet servers while offline\n", iSource );
+		stack.Push( false );
+		return;
+	}
+
+	sdNetTask* task = NULL;
+	idList< sdNetSession* >* netSessions = NULL;
+	sdHotServerList* netHotServers;
+
+	GetSessionsForServerSource( source, netSessions, task, netHotServers );
+
+	if( netSessions == NULL ) {
+		stack.Push( false );
+		return;
+	}
+
+	if( netHotServers != NULL ) {
+		netHotServers->Clear();
+	}
+
+	if ( task != NULL ) {
+		gameLocal.Printf( "SDNet::FindServers : Already scanning for servers\n" );
+		stack.Push( false );
+		return;
+	}
+
+	for ( int i = 0; i < netSessions->Num(); i ++ ) {
+		networkService->GetSessionManager().FreeSession( (*netSessions)[ i ] );
+	}
+
+	netSessions->SetGranularity( 1024 );
+	netSessions->SetNum( 0, false );
+	lastServerUpdateIndex = 0;
+
+#if !defined( SD_DEMO_BUILD )
+	CacheServersWithFriends();
+#endif /* !SD_DEMO_BUILD */
+
+	sdNetSessionManager::sessionSource_e managerSource;
+	switch ( source ) {
+		case FS_LAN:
+			managerSource = sdNetSessionManager::SS_LAN;
+			break;
+		case FS_INTERNET:
+#if !defined( SD_DEMO_BUILD )
+			managerSource = ShowRanked() ? sdNetSessionManager::SS_INTERNET_RANKED : sdNetSessionManager::SS_INTERNET_ALL;
+#else
+			managerSource = sdNetSessionManager::SS_INTERNET_ALL;
+#endif /* !SD_DEMO_BUILD */
+			break;
+
+#if !defined( SD_DEMO_BUILD ) && !defined( SD_DEMO_BUILD_CONSTRUCTION )
+		case FS_LAN_REPEATER:
+			managerSource = sdNetSessionManager::SS_LAN_REPEATER;
+			break;
+		case FS_INTERNET_REPEATER:
+			managerSource = sdNetSessionManager::SS_INTERNET_REPEATER;
+			break;
+#endif /* !SD_DEMO_BUILD && !SD_DEMO_BUILD_CONSTRUCTION */
+	}
+	if ( source != FS_HISTORY && source != FS_FAVORITES ) {
+		task = networkService->GetSessionManager().FindSessions( *netSessions, managerSource );
+		if ( task == NULL ) {
+			gameLocal.Printf( "SDNet::FindServers : failed (%d)\n", networkService->GetLastError() );
+			properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+			stack.Push( false );
+			return;
+		}
+	}
+
+	switch( source ) {
+		case FS_INTERNET:
+			findServersTask = task;
+			break;
+
+#if !defined( SD_DEMO_BUILD ) && !defined( SD_DEMO_BUILD_CONSTRUCTION )
+		case FS_INTERNET_REPEATER:
+			findRepeatersTask = task;
+			break;
+		case FS_LAN_REPEATER:
+			findLANRepeatersTask = task;
+			break;
+#endif /* !SD_DEMO_BUILD && !SD_DEMO_BUILD_CONSTRUCTION */
+
+		case FS_LAN:
+			findLANServersTask = task;
+			break;
+		case FS_HISTORY: {
+				assert( networkService->GetActiveUser() != NULL );
+				const idDict& dict = networkService->GetActiveUser()->GetProfile().GetProperties();
+				sessionsHistory.SetGranularity( sdNetUser::MAX_SERVER_HISTORY );
+
+				for( int i = 0; i < sdNetUser::MAX_SERVER_HISTORY; i++ ) {
+					const idKeyValue* kv = dict.FindKey( va( "serverHistory%i", i ) );
+					if( kv == NULL || kv->GetValue().IsEmpty() ) {
+						continue;
+					}
+					netadr_t addr;
+					if( sys->StringToNetAdr( kv->GetValue(), &addr, false ) ) {
+						sdNetSession* session = networkService->GetSessionManager().AllocSession( &addr );
+						sessionsHistory.Append( session );
+					}
+				}
+				findHistoryServersTask = task = networkService->GetSessionManager().RefreshSessions( sessionsHistory );
+				if ( task == NULL ) {
+					gameLocal.Printf( "SDNet::FindServers : failed (%d)\n", networkService->GetLastError() );
+					properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+					stack.Push( false );
+					return;
+				}
+			}
+			break;
+		case FS_FAVORITES: {
+			assert( networkService->GetActiveUser() != NULL );
+			const idDict& dict = networkService->GetActiveUser()->GetProfile().GetProperties();
+
+			int prefixLength = idStr::Length( "favorite_" );
+			const idKeyValue* kv = dict.MatchPrefix( "favorite_" );
+
+			while( kv != NULL ) {
+				const char* value = kv->GetKey().c_str();
+				value += prefixLength;
+				if( *value != '\0' ) {
+					netadr_t addr;
+					if( sys->StringToNetAdr( value, &addr, false ) ) {
+						sdNetSession* session = networkService->GetSessionManager().AllocSession( &addr );
+						sessionsFavorites.Append( session );
+					}
+				}
+
+				kv = dict.MatchPrefix( "favorite_", kv );
+			}
+			findFavoriteServersTask = task = networkService->GetSessionManager().RefreshSessions( sessionsFavorites );
+			if ( task == NULL ) {
+				gameLocal.Printf( "SDNet::FindServers : failed (%d)\n", networkService->GetLastError() );
+				properties.SetTaskResult( networkService->GetLastError(), declHolder.FindLocStr( va( "sdnet/error/%d", networkService->GetLastError() ) ) );
+				stack.Push( false );
+				return;
+			}
+		}
+		break;
+	}
+
+	stack.Push( true );
+}
 
 	SD_UI_FUNC_TAG( addUnfilteredSession, "Add an unfiltered server with the specified IP:Port." )
 		SD_UI_FUNC_PARM( string, "session", "Server IP:Port." )
@@ -477,6 +943,20 @@ void sdNetManager::InitFunctions() {
 		SD_UI_FUNC_RETURN_PARM( float, "True if keycode looks valid." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "checkKey",					'f', "ss",		&sdNetManager::Script_CheckKey );
+
+	/*
+================
+sdNetManager::Script_CheckKey
+================
+*/
+void sdNetManager::Script_CheckKey( sdUIFunctionStack& stack ) {
+	idStr keyCode;
+	idStr checksum;
+	stack.Pop( keyCode );
+	stack.Pop( checksum );
+
+	stack.Push( networkService->CheckKey( va( "%s %s", keyCode.c_str(), checksum.c_str() ) ) ? 1.0f : 0.0f );
+}
 
 	SD_UI_FUNC_TAG( initFriends, "Create friends task for initializing list of friends." )
 	SD_UI_END_FUNC_TAG
@@ -642,6 +1122,86 @@ void sdNetManager::InitFunctions() {
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "queryServerInfo",			's', "ffss",	&sdNetManager::Script_QueryServerInfo );
 
+	/*
+============
+sdNetManager::Script_QueryServerInfo
+============
+*/
+void sdNetManager::Script_QueryServerInfo( sdUIFunctionStack& stack ) {
+	float fSource;
+	stack.Pop( fSource );
+
+	float sessionIndexFloat;
+	stack.Pop( sessionIndexFloat );
+
+	idStr key;
+	stack.Pop( key );
+
+	idStr defaultValue;
+	stack.Pop( defaultValue );
+
+	if( fSource == FS_CURRENT ) {
+		if( key.Icmp( "_address" ) == 0 ) {
+			netadr_t addr = networkSystem->ClientGetServerAddress();
+			if( addr.type == NA_BAD ) {
+				stack.Push( defaultValue );
+				return;
+			}
+			stack.Push( sys->NetAdrToString( addr ) );
+			return;
+		}
+
+		if( key.Icmp( "_ranked" ) == 0 ) {
+			stack.Push( networkSystem->IsRankedServer() ? "1" : "0" );
+			return;
+		}
+
+		if( key.Icmp( "_repeater" ) == 0 ) {
+			stack.Push( gameLocal.serverIsRepeater ? "1" : "0" );
+			return;
+		}
+
+		if( key.Icmp( "_time" ) == 0 ) {
+			if ( gameLocal.rules != NULL ) {
+				stack.Push( idStr::MS2HMS( gameLocal.rules->GetGameTime() ) );
+				return;
+			}
+		}
+
+		stack.Push( gameLocal.serverInfo.GetString( key.c_str(), defaultValue.c_str() ) );
+		return;
+	}
+
+	sdNetSession* netSession = GetSession( fSource, idMath::FtoiFast( sessionIndexFloat ) );
+
+	if( netSession == NULL ) {
+		stack.Push( defaultValue.c_str() );
+		return;
+	}
+
+	if( key.Icmp( "_time" ) == 0 ) {
+		stack.Push( idStr::MS2HMS( netSession->GetSessionTime() ) );
+		return;
+	}
+
+	if( key.Icmp( "_ranked" ) == 0 ) {
+		stack.Push( netSession->IsRanked() ? "1" : "0" );
+		return;
+	}
+
+	if( key.Icmp( "_repeater" ) == 0 ) {
+		stack.Push( netSession->IsRepeater() ? "1" : "0" );
+		return;
+	}
+
+	if( key.Icmp( "_address" ) == 0 ) {
+		stack.Push( netSession->GetHostAddressString() );
+		return;
+	}
+
+	stack.Push( netSession->GetServerInfo().GetString( key.c_str(), defaultValue.c_str() ) );
+}
+
 	SD_UI_FUNC_TAG( queryMapInfo, "Query a server map info for a key/val." )
 		SD_UI_FUNC_PARM( float, "source", "Source to get servers from. See FS_* defines." )
 		SD_UI_FUNC_PARM( float, "index", "Session index." )
@@ -713,7 +1273,7 @@ void sdNetManager::InitFunctions() {
 		SD_UI_FUNC_RETURN_PARM( float, "True if task created." )
 	SD_UI_END_FUNC_TAG
 	ALLOC_FUNC( "acceptMembership",			'f', "s",		&sdNetManager::Script_Team_AcceptMembership );
-	
+
 	SD_UI_FUNC_TAG( rejectMembership, "Reject a team membership proposal." )
 		SD_UI_FUNC_PARM( string, "username", "User that sent membership." )
 		SD_UI_FUNC_RETURN_PARM( float, "True if task created." )
